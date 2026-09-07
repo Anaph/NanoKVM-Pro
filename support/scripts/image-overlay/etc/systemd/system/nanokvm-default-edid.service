@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply the default NanoKVM EDID (LG 24BK550Y-B)
+ConditionPathExists=/kvmapp/server/edid/LG-24BK550Y-B.bin
+After=nanokvm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nanokvm-default-edid.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

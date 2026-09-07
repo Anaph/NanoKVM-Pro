@@ -323,7 +323,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            android-sdk-libsparse-utils qemu-user-static binfmt-support rsync
+            android-sdk-libsparse-utils qemu-user-static binfmt-support rsync mtools
           python3 -m pip install --quiet tqdm
 
       # build_image.py chroots into the arm64 rootfs. Without a registered
@@ -378,9 +378,14 @@ jobs:
           name="$(date -u +%Y%m%d)_NanoKVMPro_$(echo "$VERSION" | tr '.+-' '_').axp"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
 
+          # The overlay makes Logitech the default USB identity (files under
+          # /boot that usbdev.sh reads) and installs the one-shot that applies
+          # the LG EDID, so the attached host sees a Logitech receiver and an
+          # LG monitor out of the box.
           python3 support/scripts/build_image/build_image.py \
             image/base.axp \
             --app image-app \
+            --overlay support/scripts/image-overlay \
             -o "image/${name}"
 
           ls -la "image/${name}"
@@ -411,7 +416,26 @@ jobs:
               print(f"members: {len(names)}, rootfs: {rootfs / 2**30:.2f} GiB")
               if rootfs < 2 * 2**30:
                   sys.exit("rootfs looks truncated")
+              z.extract("bootfs.fat32", "verify")
+              z.extract("ubuntu_rootfs_sparse.ext4", "verify")
           PY
+
+          # Default USB identity: Logitech files must be in /boot. mtools reads
+          # the FAT image directly, so this needs no vfat mount.
+          boot=verify/bootfs.fat32
+          [ "$(mtype -i "$boot" ::usb.vid)" = "0x046d" ] || { echo "usb.vid wrong"; exit 1; }
+          [ "$(mtype -i "$boot" ::usb.product)" = "USB Receiver" ] || { echo "usb.product wrong"; exit 1; }
+          echo "boot: $(mtype -i "$boot" ::usb.manufacturer) $(mtype -i "$boot" ::usb.product) $(mtype -i "$boot" ::usb.vid):$(mtype -i "$boot" ::usb.pid)"
+
+          # Default EDID: the one-shot and its enable symlink must be in the rootfs.
+          simg2img verify/ubuntu_rootfs_sparse.ext4 verify/rootfs.ext4
+          mkdir -p verify/mp
+          sudo mount -o ro verify/rootfs.ext4 verify/mp
+          test -x verify/mp/usr/local/sbin/nanokvm-default-edid.sh
+          test -L verify/mp/etc/systemd/system/multi-user.target.wants/nanokvm-default-edid.service
+          test -f verify/mp/kvmapp/server/edid/LG-24BK550Y-B.bin
+          echo "rootfs: default-edid one-shot installed and enabled"
+          sudo umount verify/mp
 
       - uses: actions/upload-artifact@v4
         with:

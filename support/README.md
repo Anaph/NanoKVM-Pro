@@ -56,6 +56,25 @@ One consequence worth knowing: the USB network gadget was how a host reached the
 KVM's web interface over the USB cable. With it gone, the KVM is reachable only
 over Ethernet or Wi-Fi.
 
+## Default identity: Logitech receiver + LG monitor
+
+The image ships a disguised identity so the attached host does not see a KVM by
+default. `scripts/image-overlay/` is applied by the `image` CI job (build_image
+`--overlay`):
+
+- **USB**: `/boot/usb.vid`, `usb.pid`, `usb.manufacturer`, `usb.product` and an
+  empty `usb.serialnumber` describe a Logitech `046d:c517` "USB Receiver".
+  usbdev.sh reads these on every boot, and the hid-only hardening leaves them
+  untouched (it only removes the non-HID function flags).
+- **Monitor**: a one-shot systemd unit (`nanokvm-default-edid.service`) writes
+  the LG 24BK550Y-B EDID to the LT6911 once per flashed image. The chip and the
+  `/etc` stamp both persist across reboots, and `GetEdid` recognises the profile
+  by its marker byte, so the UI shows "LG-24BK550Y-B".
+
+Both are the same knobs exposed at runtime under Settings; the overlay only sets
+the factory default. Change or clear them there (or via `/boot/usb.*`) at any
+time.
+
 ## Releases
 
 `scripts/build_release.sh` produces the `nanokvm_pro_<version>` package layout
