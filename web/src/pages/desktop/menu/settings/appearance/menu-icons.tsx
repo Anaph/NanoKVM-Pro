@@ -3,10 +3,8 @@ import { Switch } from 'antd';
 import { useAtom } from 'jotai';
 import {
   BotMessageSquare,
-  DiscIcon,
   FileJsonIcon,
   MaximizeIcon,
-  MicIcon,
   NetworkIcon,
   PowerIcon,
   TerminalSquareIcon,
@@ -27,8 +25,6 @@ export const MenuIcons = () => {
 
   const items = [
     { key: 'volume', icon: <Volume2Icon size={16} /> },
-    { key: 'microphone', icon: <MicIcon size={16} /> },
-    { key: 'image', icon: <DiscIcon size={16} /> },
     { key: 'script', icon: <FileJsonIcon size={16} /> },
     { key: 'assistant', icon: <BotMessageSquare size={16} /> },
     { key: 'terminal', icon: <TerminalSquareIcon size={16} /> },

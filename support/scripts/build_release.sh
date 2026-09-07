@@ -136,6 +136,15 @@ if [[ -n "$EDID_DIR" ]] && compgen -G "${EDID_DIR}/*.bin" >/dev/null; then
     cp -a "${EDID_DIR}"/*.bin "${server_dir}/edid/"
 fi
 
+# Restrict the gadget to keyboard, mouse and touchpad. usbdev.sh ships in this
+# package, so patching it here is what makes "keyboard/mouse/monitor only" a
+# property of the firmware rather than a UI setting that can be toggled back.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usbdev="${pkg_root}/kvmapp/scripts/usbdev.sh"
+[[ -f "$usbdev" ]] || die "base package has no usbdev.sh to harden"
+log "restricting the USB gadget to keyboard/mouse/touchpad only"
+python3 "${script_dir}/harden_hid_only.py" "$usbdev"
+
 # The control file carries the version dpkg reports and the device's updater
 # compares against.
 sed -i "s/^Version: .*/Version: ${VERSION}/" "${pkg_root}/DEBIAN/control"

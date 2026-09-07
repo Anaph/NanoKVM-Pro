@@ -38,6 +38,24 @@ Two independent descriptors decide what the controlled machine sees:
 - **The EDID in the LT6911 capture chip** names the "monitor". See
   [`edid/README.md`](edid/README.md).
 
+## Keyboard, mouse and monitor only
+
+This firmware restricts the USB gadget to the three HID functions — keyboard,
+mouse and touchpad — and nothing else. `scripts/harden_hid_only.py` patches the
+`usbdev.sh` that ships in the nanokvm package (applied by `build_release.sh`) so
+that `hid_start` deletes every non-HID `/boot/usb.*` flag before it reads them.
+
+The effect is a hard guarantee at the firmware level: no USB network card (NCM
+or RNDIS), microphone (UAC2), serial port (ACM), display loopback or
+mass-storage drive can be enumerated on the attached host, no matter what wrote
+the flag file. The web controls that used to toggle those (Settings → Device →
+virtual devices, and the image-mount and microphone buttons in the menu bar)
+are removed to match.
+
+One consequence worth knowing: the USB network gadget was how a host reached the
+KVM's web interface over the USB cable. With it gone, the KVM is reachable only
+over Ethernet or Wi-Fi.
+
 ## Releases
 
 `scripts/build_release.sh` produces the `nanokvm_pro_<version>` package layout
