@@ -103,6 +103,11 @@ A full flashable `.axp` additionally needs a base image built from
 [maix_ax620e_sdk](https://github.com/sipeed/maix_ax620e_sdk); see
 [`scripts/build_image/README.md`](scripts/build_image/README.md).
 
+The `image` CI job also converts the `.axp` into a raw `.img.xz` with `axp2img`
+(`pip install axp-tools`), and publishes both. The `.img.xz` is what balenaEtcher
+flashes directly (or `xz -dc <file>.img.xz | sudo dd of=/dev/<device> bs=4M`);
+the `.axp` is the same image in Sipeed's container for their own flashing tool.
+
 ## Firmware images
 
 The `image` job in `.github/workflows/build.yml` produces a flashable `.axp`.
