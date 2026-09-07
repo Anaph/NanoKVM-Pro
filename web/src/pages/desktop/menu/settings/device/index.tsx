@@ -13,7 +13,6 @@ import { Reboot } from './reboot.tsx';
 import { ScheduledScreenOff } from './scheduled-screen-off.tsx';
 import { Ssh } from './ssh.tsx';
 import { UsbIdentity } from './usb-identity.tsx';
-import { VirtualDevices } from './virtual-devices';
 import { Wifi } from './wifi.tsx';
 
 export const Device = () => {
@@ -29,9 +28,6 @@ export const Device = () => {
         <Mdns />
         <HdmiCapture />
         <HdmiPassthrough />
-        <Divider className="opacity-50" />
-
-        <VirtualDevices />
         <Divider className="opacity-50" />
 
         <UsbIdentity />

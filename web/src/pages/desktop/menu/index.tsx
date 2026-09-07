@@ -13,9 +13,7 @@ import { useMenuVisibility } from '@/hooks/useMenuVisibility.ts';
 
 import { AIAssistant } from './assistant';
 import { Fullscreen } from './fullscreen';
-import { Image } from './image';
 import { Keyboard } from './keyboard';
-import { Microphone } from './microphone';
 import { Mouse } from './mouse';
 import { Collapse, Expand } from './operations';
 import { Power } from './power';
@@ -106,20 +104,18 @@ export const Menu = () => {
 
             <Screen />
             {isEnabled('volume') && <Volume />}
-            {isEnabled('microphone') && <Microphone />}
-            {['volume', 'microphone'].some(isEnabled) && <Divider type="vertical" />}
+            {isEnabled('volume') && <Divider type="vertical" />}
 
             <Keyboard />
             <Mouse />
             <Divider type="vertical" />
 
-            {isEnabled('image') && <Image />}
             {isEnabled('script') && <Script />}
             {isEnabled('assistant') && <AIAssistant />}
             {isEnabled('terminal') && <Terminal />}
             {isEnabled('wol') && <Wol />}
 
-            {['image', 'script', 'assistant', 'terminal', 'wol'].some(isEnabled) && (
+            {['script', 'assistant', 'terminal', 'wol'].some(isEnabled) && (
               <Divider type="vertical" />
             )}
 
