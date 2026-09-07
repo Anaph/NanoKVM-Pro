@@ -45,6 +45,9 @@ func vmRouter(r *gin.Engine) {
 	api.POST("/vm/ssh/enable", service.EnableSSH)   // enable SSH
 	api.POST("/vm/ssh/disable", service.DisableSSH) // disable SSH
 
+	api.GET("/vm/usb-identity", service.GetUsbIdentity)  // get emulated USB device identity
+	api.POST("/vm/usb-identity", service.SetUsbIdentity) // set emulated USB device identity
+
 	api.GET("/vm/edid", service.GetEdid)                  // get current EDID
 	api.POST("/vm/edid", service.SwitchEdid)              // switch EDID
 	api.POST("/vm/edid/upload", service.UploadEdid)       // upload EDID

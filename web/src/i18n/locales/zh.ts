@@ -347,6 +347,24 @@ const zh = {
       },
       device: {
         title: '设备',
+        usbIdentity: {
+          title: 'USB 设备标识',
+          description: '修改主机端看到的模拟键鼠名称',
+          tip: '键盘、鼠标和触摸板通过同一个 USB 复合设备提供，因此共用一组 VID/PID 和名称。应用修改会重新枚举该设备：被控主机上的模拟键鼠会短暂断开。',
+          vendorId: 'Vendor ID',
+          productId: 'Product ID',
+          manufacturer: '厂商名称',
+          product: '产品名称',
+          serial: '序列号',
+          apply: '应用',
+          applied: 'USB 标识已应用',
+          failed: 'USB 标识应用失败',
+          presets: {
+            factory: 'NanoKVM（出厂）',
+            'logitech-classic': '罗技 Cordless Desktop 接收器',
+            custom: '自定义'
+          }
+        },
         oled: {
           title: 'OLED',
           description: '设置 OLED 屏幕自动休眠时间',

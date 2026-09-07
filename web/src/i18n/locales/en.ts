@@ -369,6 +369,24 @@ const en = {
       },
       device: {
         title: 'Device',
+        usbIdentity: {
+          title: 'USB device identity',
+          description: 'Rename the emulated keyboard and mouse as the host sees them',
+          tip: 'The keyboard, mouse and touchpad are exposed through one composite USB device, so they share a single vendor/product id and set of names. Applying a change re-attaches the device: the host briefly loses the emulated keyboard and mouse.',
+          vendorId: 'Vendor ID',
+          productId: 'Product ID',
+          manufacturer: 'Manufacturer',
+          product: 'Product',
+          serial: 'Serial number',
+          apply: 'Apply',
+          applied: 'USB identity applied',
+          failed: 'Failed to apply USB identity',
+          presets: {
+            factory: 'NanoKVM (factory)',
+            'logitech-classic': 'Logitech Cordless Desktop receiver',
+            custom: 'Custom'
+          }
+        },
         oled: {
           title: 'OLED',
           description: 'Turn off OLED screen after',

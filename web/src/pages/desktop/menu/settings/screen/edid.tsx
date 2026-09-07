@@ -11,7 +11,8 @@ const defaultEdidList = [
   { value: 'E56-2K60FPS', label: '2560 x 1440 60Hz' },
   { value: 'E54-1080P60FPS', label: '1920 x 1080 60Hz' },
   { value: 'E58-4K16-10', label: '3840 x 2400 30Hz' },
-  { value: 'E63-Ultrawide', label: '3440 x 1440 60Hz' }
+  { value: 'E63-Ultrawide', label: '3440 x 1440 60Hz' },
+  { value: 'LG-24BK550Y-B', label: 'LG 24BK550Y-B - 1920 x 1080 60Hz' }
 ];
 
 export const Edid = () => {

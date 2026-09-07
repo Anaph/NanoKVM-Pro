@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
@@ -29,6 +30,62 @@ var EDIDMap = map[byte]string{
 	0x38: "E56-2K60FPS",
 	0x3a: "E58-4K16-10",
 	0x3f: "E63-Ultrawide",
+
+	// Profiles shipped with the server under bundledEdidDir(). The key is byte 12
+	// of the EDID (the low byte of the serial number), which is what the LT6911
+	// snapshot exposes for identification.
+	0x4c: "LG-24BK550Y-B",
+}
+
+// bundledEdidDir returns the directory of EDID profiles shipped alongside the
+// server binary, next to the web assets that router.web() serves.
+func bundledEdidDir() string {
+	bundledEdidDirOnce.Do(func() {
+		execPath, err := os.Executable()
+		if err != nil {
+			log.Errorf("failed to resolve executable path: %s", err)
+			return
+		}
+		bundledEdidDirPath = filepath.Join(filepath.Dir(execPath), "edid")
+	})
+	return bundledEdidDirPath
+}
+
+var (
+	bundledEdidDirOnce sync.Once
+	bundledEdidDirPath string
+)
+
+// resolveEdidPath locates the blob for the requested profile. Factory profiles
+// and the bundled ones are stored with a .bin suffix, uploaded ones keep the
+// filename they were uploaded under.
+func resolveEdidPath(name string) (path string, isCustom bool, err error) {
+	if !isSafeEdidName(name) {
+		return "", false, fmt.Errorf("invalid EDID name: %s", name)
+	}
+
+	type candidate struct {
+		path   string
+		custom bool
+	}
+
+	candidates := []candidate{
+		{filepath.Join(EdidDir, name+".bin"), false},
+	}
+
+	if dir := bundledEdidDir(); dir != "" {
+		candidates = append(candidates, candidate{filepath.Join(dir, name+".bin"), false})
+	}
+
+	candidates = append(candidates, candidate{filepath.Join(CustomEdidDir, name), true})
+
+	for _, c := range candidates {
+		if _, statErr := os.Stat(c.path); statErr == nil {
+			return c.path, c.custom, nil
+		}
+	}
+
+	return "", false, fmt.Errorf("unknown EDID: %s", name)
 }
 
 func (s *Service) GetEdid(ctx *gin.Context) {
@@ -72,16 +129,16 @@ func (s *Service) SwitchEdid(c *gin.Context) {
 		return
 	}
 
-	srcPath := filepath.Join(EdidDir, req.Edid+".bin")
-	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-		// custom EDID
-		srcPath = filepath.Join(CustomEdidDir, req.Edid)
-		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-			log.Debugf("unknown edid: %s", req.Edid)
-			rsp.ErrRsp(c, -3, "invalid EDID")
-			return
-		}
+	srcPath, isCustom, err := resolveEdidPath(req.Edid)
+	if err != nil {
+		log.Debugf("unknown edid: %s", req.Edid)
+		rsp.ErrRsp(c, -3, "invalid EDID")
+		return
+	}
 
+	if isCustom {
+		// Uploaded profiles carry no marker byte the snapshot could be matched
+		// against, so remember which one is active.
 		_ = os.WriteFile(CustomEdidFlag, []byte(req.Edid), 0644)
 	}
 
@@ -130,6 +187,11 @@ func (s *Service) DeleteEdid(c *gin.Context) {
 		return
 	}
 
+	if !isSafeEdidName(req.Edid) {
+		rsp.ErrRsp(c, -1, "invalid arguments")
+		return
+	}
+
 	file := filepath.Join(CustomEdidDir, req.Edid)
 
 	if err := os.Remove(file); err != nil {
@@ -156,7 +218,13 @@ func (s *Service) UploadEdid(c *gin.Context) {
 		_ = os.MkdirAll(CustomEdidDir, 0o755)
 	}
 
-	target := fmt.Sprintf("%s/%s", CustomEdidDir, header.Filename)
+	name := filepath.Base(header.Filename)
+	if !isSafeEdidName(name) {
+		rsp.ErrRsp(c, -1, "bad request")
+		return
+	}
+
+	target := fmt.Sprintf("%s/%s", CustomEdidDir, name)
 	dst, err := os.Create(target)
 	if err != nil {
 		rsp.ErrRsp(c, -2, "create file failed")
@@ -174,10 +242,10 @@ func (s *Service) UploadEdid(c *gin.Context) {
 	_ = utils.EnsurePermission(target, 0o644)
 
 	data := &proto.UploadEdidRsp{
-		File: header.Filename,
+		File: name,
 	}
 	rsp.OkRspWithData(c, data)
-	log.Debugf("upload edid file: %s", header.Filename)
+	log.Debugf("upload edid file: %s", name)
 }
 
 func copyFile(src, dst string) error {
@@ -186,6 +254,15 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, input, 0644)
+}
+
+// isSafeEdidName rejects anything that would let a profile name escape the
+// directory it is looked up in; these names are joined onto filesystem paths.
+func isSafeEdidName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\`)
 }
 
 func isBin(name string) bool {
