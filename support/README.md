@@ -65,3 +65,34 @@ To build one locally:
 A full flashable `.axp` additionally needs a base image built from
 [maix_ax620e_sdk](https://github.com/sipeed/maix_ax620e_sdk); see
 [`scripts/build_image/README.md`](scripts/build_image/README.md).
+
+## Firmware images
+
+The `image` job in `.github/workflows/build.yml` produces a flashable `.axp`.
+`scripts/build_image/build_image.py` patches an existing image rather than
+building a rootfs, so `BASE_IMAGE_URL` in the workflow points at a published
+NanoKVM-Pro image, which supplies the kernel, bootloaders and Ubuntu userland.
+
+Only the `nanokvm` package is installed into it. The base image already carries
+`kvmcomm` and `pikvm` at the same versions, so reinstalling them changes nothing
+and `pikvm`'s postinst does not survive a chroot: it calls `systemctl` and
+`pikvm_init.sh`, neither of which works without a running systemd.
+
+Building one by hand needs a few things a plain checkout does not have:
+
+```sh
+sudo apt-get install -y android-sdk-libsparse-utils qemu-user-static \
+                        binfmt-support rsync
+pip install tqdm
+
+# build_image.py chroots into an arm64 rootfs; without a registered handler
+# the kernel cannot exec its binaries and chroot fails with "Exec format error".
+sudo update-binfmts --enable qemu-aarch64
+
+python3 support/scripts/build_image/build_image.py base.axp \
+    --app <dir with nanokvmpro_*.deb> -o firmware.axp
+```
+
+It needs root, loop devices and roughly 10 GB of free space on top of the base
+image. `axp2img -i firmware.axp` (`pip install axp-tools`) converts the result
+to `.img` if your flashing tool wants that.

@@ -1,0 +1,47 @@
+name: Release cleanup
+
+# Deleting a release needs a token with contents:write, which only a workflow
+# run has. This exists so a release published by mistake can be removed without
+# doing it by hand in the web UI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of the release to delete, e.g. v1.2.15+hid.1'
+        type: string
+        required: true
+      delete_tag:
+        description: 'Also delete the git tag'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    name: Delete release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "No release found for tag ${TAG}; nothing to delete."
+            exit 0
+          fi
+
+          if [ "${{ inputs.delete_tag }}" = "true" ]; then
+            gh release delete "$TAG" --yes --cleanup-tag
+            echo "Deleted release and tag ${TAG}."
+          else
+            gh release delete "$TAG" --yes
+            echo "Deleted release ${TAG}, kept the tag."
+          fi
