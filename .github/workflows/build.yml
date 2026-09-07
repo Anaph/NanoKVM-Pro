@@ -1,0 +1,200 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/issue-tracker.yml'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/issue-tracker.yml'
+  workflow_dispatch:
+
+# A newer push to the same branch makes the previous build irrelevant.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Web frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # package.json declares no packageManager field, so the version is pinned
+      # here to match web/pnpm-lock.yaml (lockfileVersion 9).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      # package.json requires ^20.19.0 || >=22.12.0.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm build` runs tsc before vite, so this type-checks as well.
+      - name: Build
+        working-directory: web
+        run: pnpm build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: web/dist
+          if-no-files-found: error
+
+  server:
+    name: Server (aarch64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      # patchelf: build.sh sets the dl_lib rpath with it.
+      # libopus-dev: `go vet` compiles the cgo packages for the host, so it
+      # needs the host copy of opus/opus.h even though the build targets arm64.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends patchelf libopus-dev
+
+      # ~500 MB from developer.arm.com, pinned by sha256 in config.ini, so key
+      # the cache on that file.
+      - name: Cache cross toolchain
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: support/toolchains
+          key: toolchain-${{ runner.os }}-${{ hashFiles('support/scripts/config.ini') }}
+
+      - name: Install cross toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        working-directory: support/scripts
+        run: ./toolchain_setup.sh
+
+      # toolchain.ini records absolute paths, and build.sh additionally resolves
+      # the compiler through `command -v`. Rewriting the file and exporting the
+      # bin directory here keeps both correct whether the toolchain was just
+      # installed or restored from a cache built in another workspace.
+      - name: Point the build at the toolchain
+        working-directory: support/scripts
+        run: |
+          set -euo pipefail
+          name="$(python3 getconfig.py config.ini toolchain name)"
+          dir="$(cd "../toolchains/${name}" && pwd)"
+
+          {
+            echo '[toolchain]'
+            for key in cc cxx ld; do
+              echo "${key} = ${dir}/$(python3 getconfig.py config.ini toolchain "${key}")"
+            done
+          } > ../toolchains/toolchain.ini
+
+          cat ../toolchains/toolchain.ini
+          echo "${dir}/bin" >> "$GITHUB_PATH"
+
+      - name: Check formatting and vet
+        working-directory: server
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+
+      - name: Build
+        working-directory: server
+        run: ./build.sh
+
+      - name: Verify target architecture
+        working-directory: server
+        run: |
+          set -euo pipefail
+          file NanoKVM-Server
+          file NanoKVM-Server | grep -q 'ARM aarch64' || {
+            echo 'built binary is not aarch64'
+            exit 1
+          }
+
+      # dl_lib is deliberately absent from the artifact: kvmimpl.cpp is a
+      # link-time stub whose every entry point aborts, which is why build.sh
+      # deletes the .so it builds in an EXIT trap. The real libkvm.so lives on
+      # the device, where the binary finds it through its $ORIGIN/dl_lib rpath.
+      - name: Stage server tree
+        run: |
+          set -euo pipefail
+          mkdir -p dist/server/edid
+          cp server/NanoKVM-Server dist/server/
+          # Bundled EDID profiles are read from an "edid" directory next to the
+          # binary, see support/edid/README.md.
+          cp support/edid/*.bin dist/server/edid/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-aarch64
+          path: dist/server
+          if-no-files-found: error
+
+  edid:
+    name: EDID profiles
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Fails if a committed .bin no longer matches its generator.
+      - name: Verify committed blobs
+        working-directory: support/edid
+        run: python3 generate_edid.py --check
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    needs: [web, server]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-aarch64
+          path: nanokvm-pro/server
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web
+          path: nanokvm-pro/server/web
+
+      # Mirrors the on-device layout: router.web() serves <dir of binary>/web,
+      # and the bundled EDID profiles sit beside it.
+      - name: Show layout
+        run: find nanokvm-pro -maxdepth 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nanokvm-pro-app
+          path: nanokvm-pro
+          if-no-files-found: error
