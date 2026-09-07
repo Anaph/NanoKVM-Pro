@@ -297,24 +297,36 @@ main() {
     fi
     rm -f "$temp_file"
 
+    # A download that verified its sha256 but still fails validation is a
+    # corrupt or unexpected archive, and re-running would fetch the same bytes
+    # again. Fail instead of recursing, which had no depth limit.
     if ! validate_toolchain "$target_dir"; then
-        echo "Detected damaged installation, triggering reinstallation..."
+        echo "Error: the extracted toolchain did not validate"
+        echo "Removing ${target_dir}; re-run this script to try again"
         rm -rf "$target_dir"
-        # Re-execute installation process
-        main "$@"
-        return
+        exit 1
     fi
 
+    # A missing toolchain.ini leaves server/build.sh unable to find a compiler,
+    # so this is fatal rather than something to return quietly from.
     if ! gen_toolchain_path "$target_dir"; then
-        return
+        echo "Error: failed to write the toolchain configuration"
+        exit 1
     fi
 
     if ! gen_conan_profile "$target_dir"; then
-        return
+        echo "Error: failed to write the Conan profile"
+        exit 1
     fi
 
-    # Install additional libraries for cross-compilation
-    install_libopus "$target_dir"
+    # Only the audio input feature needs libopus, and install_libopus already
+    # reports why it gave up, so a failure here must not fail the toolchain
+    # install that otherwise succeeded.
+    if ! install_libopus "$target_dir"; then
+        echo "Warning: libopus was not installed; audio input will not build"
+    fi
+
+    echo "Toolchain ready: ${target_dir}"
 }
 
 main
