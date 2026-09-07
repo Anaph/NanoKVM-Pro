@@ -179,6 +179,31 @@ type UploadEdidRsp struct {
 	File string `json:"file"`
 }
 
+type UsbIdentityPreset struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type GetUsbIdentityRsp struct {
+	VendorID     string              `json:"vendorId"`
+	ProductID    string              `json:"productId"`
+	Manufacturer string              `json:"manufacturer"`
+	Product      string              `json:"product"`
+	Serial       string              `json:"serial"`
+	Preset       string              `json:"preset"`
+	Presets      []UsbIdentityPreset `json:"presets"`
+}
+
+type SetUsbIdentityReq struct {
+	// Preset selects a built-in identity; when empty the explicit fields are used.
+	Preset       string `form:"preset" validate:"omitempty"`
+	VendorID     string `form:"vendorId" validate:"omitempty"`
+	ProductID    string `form:"productId" validate:"omitempty"`
+	Manufacturer string `form:"manufacturer" validate:"omitempty"`
+	Product      string `form:"product" validate:"omitempty"`
+	Serial       string `form:"serial" validate:"omitempty"`
+}
+
 type GetHdmiCaptureRsp struct {
 	Enabled bool `json:"enabled"`
 }

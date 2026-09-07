@@ -178,6 +178,21 @@ export function setLedConfig(config: {
   return http.post('/api/vm/ledstrip/set', config);
 }
 
+export function getUsbIdentity() {
+  return http.get('/api/vm/usb-identity');
+}
+
+export function setUsbIdentity(identity: {
+  preset?: string;
+  vendorId?: string;
+  productId?: string;
+  manufacturer?: string;
+  product?: string;
+  serial?: string;
+}) {
+  return http.post('/api/vm/usb-identity', identity);
+}
+
 export function updateEdid(edid: string) {
   return http.post('/api/vm/edid', {
     edid

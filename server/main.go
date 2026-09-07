@@ -14,6 +14,7 @@ import (
 	"NanoKVM-Server/logger"
 	"NanoKVM-Server/middleware"
 	"NanoKVM-Server/router"
+	"NanoKVM-Server/service/vm"
 	"NanoKVM-Server/service/vm/jiggler"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,10 @@ func initialize() {
 
 	// init screen parameters
 	_ = common.GetScreen()
+
+	// re-apply the emulated USB identity, the boot scripts rebuild the gadget
+	// with the stock descriptor on every start
+	vm.RestoreUsbIdentity()
 
 	// run mouse jiggler
 	jiggler.GetJiggler().Run()
