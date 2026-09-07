@@ -58,7 +58,9 @@ def replace_axp(axp_file, replacements, output=None):
             fi'''
         ])
 
-        run_chroot_commands(mount_point=mount_point, commands=["mkdir /data"])
+        # -p so the script also works against an already-built image, where
+        # /data exists; a bare SDK rootfs does not have it yet.
+        run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /data"])
 
         if args.remove_file:
             remove_files(mount_point=mount_point, remove_file_list=args.remove_file)

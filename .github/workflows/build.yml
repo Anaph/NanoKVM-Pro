@@ -24,6 +24,10 @@ env:
   # Upstream release the nanokvm package is rebased onto: it supplies libkvm.so,
   # usbdev.sh and the kvmcomm/pikvm components, none of which are built here.
   BASE_RELEASE_VERSION: '1.2.15'
+  # Flashable image the firmware is rebuilt from. build_image.py patches this
+  # base rather than building a rootfs, so a published NanoKVM-Pro image is what
+  # supplies the kernel, bootloaders and the Ubuntu userland.
+  BASE_IMAGE_URL: 'https://github.com/sipeed/NanoKVM-Pro/releases/download/v1.0.15/20260529_NanoKVMPro_1_0_15.axp'
 
 # A newer push to the same branch makes the previous build irrelevant.
 concurrency:
@@ -221,8 +225,8 @@ jobs:
       github.ref_type == 'tag' ||
       (github.event_name == 'workflow_dispatch' && inputs.version != '')
 
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -294,11 +298,134 @@ jobs:
           path: dist/release/*.tar.gz
           if-no-files-found: error
 
+  image:
+    name: Firmware image
+    runs-on: ubuntu-latest
+    needs: [release]
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The rootfs expands to several GB and is repacked alongside the original,
+      # which does not fit next to the runner's preinstalled toolchains.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Install image tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            android-sdk-libsparse-utils qemu-user-static binfmt-support rsync
+          python3 -m pip install --quiet tqdm
+
+      # build_image.py chroots into the arm64 rootfs. Without a registered
+      # handler the kernel cannot exec its binaries and chroot fails with
+      # "Exec format error".
+      - name: Register the aarch64 binfmt handler
+        run: |
+          set -euo pipefail
+          sudo update-binfmts --enable qemu-aarch64 || true
+          if [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+            echo 'qemu-aarch64 binfmt handler is not registered'
+            exit 1
+          fi
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: dist/release
+
+      # Only the package this repository builds goes into the image. The base
+      # image already carries kvmcomm and pikvm at the same versions, so
+      # reinstalling them is a no-op that can only break the build: pikvm's
+      # postinst runs pikvm_init.sh and systemctl, neither of which works in a
+      # chroot without a running systemd.
+      - name: Select the packages to install
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          tar xzf "dist/release/nanokvm_pro_${VERSION}.tar.gz" -C dist/release
+
+          mkdir -p image-app
+          cp "dist/release/nanokvm_pro_${VERSION}/nanokvmpro_${VERSION}_arm64.deb" image-app/
+          cp "dist/release/nanokvm_pro_${VERSION}/nanokvmpro_${VERSION}.json" image-app/
+          ls -la image-app
+
+      - name: Download the base image
+        run: |
+          set -euo pipefail
+          mkdir -p image
+          curl -fL --retry 3 --retry-delay 5 -o "image/base.axp" "$BASE_IMAGE_URL"
+          ls -la image/base.axp
+
+      - name: Build the firmware image
+        id: image
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Mirrors the upstream asset naming, e.g. 20260529_NanoKVMPro_1_0_15.axp
+          name="$(date -u +%Y%m%d)_NanoKVMPro_$(echo "$VERSION" | tr '.+-' '_').axp"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+          python3 support/scripts/build_image/build_image.py \
+            image/base.axp \
+            --app image-app \
+            -o "image/${name}"
+
+          ls -la "image/${name}"
+          df -h /
+
+      # A repack that silently dropped the rootfs would still produce a zip, so
+      # check the members the flashing tool needs are all present.
+      - name: Verify the image
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+        run: |
+          set -euo pipefail
+          python3 - "image/${IMAGE_NAME}" <<'PY'
+          import sys, zipfile
+          required = [
+              "ubuntu_rootfs_sparse.ext4",
+              "bootfs.fat32",
+              "boot_signed.bin",
+              "u-boot_signed.bin",
+              "AX630C_emmc_arm64_k419_sipeed_nanokvm.xml",
+          ]
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              names = set(z.namelist())
+              missing = [n for n in required if n not in names]
+              if missing:
+                  sys.exit(f"image is missing: {missing}")
+              rootfs = z.getinfo("ubuntu_rootfs_sparse.ext4").file_size
+              print(f"members: {len(names)}, rootfs: {rootfs / 2**30:.2f} GiB")
+              if rootfs < 2 * 2**30:
+                  sys.exit("rootfs looks truncated")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-image
+          path: image/*.axp
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Publish GitHub Release
         if: github.ref_type == 'tag' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.release.outputs.version }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
         run: |
           set -euo pipefail
 
@@ -313,16 +440,30 @@ jobs:
           {
             echo "Built by GitHub Actions from \`${GITHUB_SHA}\`."
             echo
-            echo "\`nanokvm_pro_${VERSION}.tar.gz\` is what \`support/scripts/build_image/build_image.py\`"
-            echo "takes as \`--app\`; combined with a base AXP from"
-            echo "[maix_ax620e_sdk](https://github.com/sipeed/maix_ax620e_sdk) it yields a flashable image."
+            echo "### Flashing"
             echo
-            echo "The \`nanokvm\` package is built from this repository. \`kvmcomm\`, \`pikvm\`, and the"
-            echo "parts of \`nanokvm\` that are not built here (libkvm.so, usbdev.sh, the systemd units)"
-            echo "come unchanged from upstream release ${BASE_RELEASE_VERSION}."
+            echo "\`${IMAGE_NAME}\` is a complete image; flash it as described in the"
+            echo "[Sipeed wiki](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM_Pro/faq.html#Image-Burning-Methods)."
+            echo "Convert it to .img with \`axp2img -i ${IMAGE_NAME}\` (\`pip install axp-tools\`) if your tool needs that."
+            echo
+            echo "### Updating an existing device"
+            echo
+            echo "\`nanokvm_pro_${VERSION}.tar.gz\` holds the same packages on their own, for installing"
+            echo "over a running system without reflashing."
+            echo
+            echo "### Provenance"
+            echo
+            echo "The \`nanokvm\` package is built from this repository. The base image is upstream"
+            echo "\`$(basename "$BASE_IMAGE_URL")\`, and \`kvmcomm\`, \`pikvm\` and the parts of \`nanokvm\` not built"
+            echo "here (libkvm.so, usbdev.sh, the systemd units) come from upstream release ${BASE_RELEASE_VERSION}."
           } > release-notes.md
 
+          # Makes a re-publish of the same version replace the old assets
+          # instead of failing on an existing tag.
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+
           gh release create "$tag" \
+            "image/${IMAGE_NAME}" \
             "dist/release/nanokvm_pro_${VERSION}.tar.gz" \
             --title "$VERSION" \
             --notes-file release-notes.md \
