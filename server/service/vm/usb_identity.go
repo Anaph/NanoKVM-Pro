@@ -1,10 +1,10 @@
 package vm
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,25 +23,23 @@ import (
 // descriptors of the composite gadget that carries them, so changing the gadget
 // identity is what renames the HID devices on the host side.
 //
-// usbdev.sh rebuilds the gadget from its own defaults on every boot, which is
-// why the chosen identity is persisted here and re-applied by RestoreUsbIdentity
-// when the server starts.
+// usbdev.sh rebuilds the gadget on every boot and reads each of these files
+// when it does, falling back to the built-in default when one is absent. Writing
+// them is therefore the supported way to override the descriptor: the value
+// survives reboots without any help from the server, and clearing a file
+// restores the factory value.
 const (
 	gadgetDir   = "/sys/kernel/config/usb_gadget/g0"
-	gadgetUDC   = gadgetDir + "/UDC"
-	udcClassDir = "/sys/class/udc"
-
-	usbIdentityFile = "/etc/kvm/usb-identity.json"
-	// Snapshot of whatever the gadget looked like before the first override,
-	// so the factory preset can restore it without hardcoding the defaults.
-	usbFactoryFile = "/etc/kvm/usb-identity.factory.json"
+	usbScript   = "/kvmapp/scripts/usbdev.sh"
+	bootConfDir = "/boot"
 
 	// USB string descriptors carry UTF-16 code units in a 255-byte packet,
 	// which leaves room for 126 characters.
 	maxUSBStringLen = 126
 
 	// PresetCustom marks an identity that matches none of the built-in presets.
-	PresetCustom  = "custom"
+	PresetCustom = "custom"
+	// PresetFactory clears the overrides and lets usbdev.sh use its defaults.
 	PresetFactory = "factory"
 )
 
@@ -56,14 +54,38 @@ type UsbIdentity struct {
 	Serial       string `json:"serial"`
 }
 
+// usbIdentityFiles maps each field to the /boot file usbdev.sh reads it from.
+var usbIdentityFiles = []struct {
+	file string
+	get  func(*UsbIdentity) string
+	set  func(*UsbIdentity, string)
+}{
+	{"usb.vid", func(i *UsbIdentity) string { return i.VendorID }, func(i *UsbIdentity, v string) { i.VendorID = v }},
+	{"usb.pid", func(i *UsbIdentity) string { return i.ProductID }, func(i *UsbIdentity, v string) { i.ProductID = v }},
+	{"usb.manufacturer", func(i *UsbIdentity) string { return i.Manufacturer }, func(i *UsbIdentity, v string) { i.Manufacturer = v }},
+	{"usb.product", func(i *UsbIdentity) string { return i.Product }, func(i *UsbIdentity, v string) { i.Product = v }},
+	{"usb.serialnumber", func(i *UsbIdentity) string { return i.Serial }, func(i *UsbIdentity, v string) { i.Serial = v }},
+}
+
 type usbPreset struct {
 	Name        string
 	Description string
 	Identity    UsbIdentity
 }
 
-// Built-in presets. The factory entry is resolved at runtime from the snapshot
-// taken before the first override, so it is not listed here.
+// factoryIdentity mirrors the defaults hardcoded in usbdev.sh's hid_start. It is
+// only used to label the current descriptor in the UI; selecting the factory
+// preset removes the override files rather than writing these values back.
+var factoryIdentity = UsbIdentity{
+	VendorID:     "0x3346",
+	ProductID:    "0x1009",
+	Manufacturer: "sipeed",
+	Product:      "NanoKVMPro",
+	Serial:       "0123456789ABCDEF",
+}
+
+// Built-in presets. The factory entry is handled separately, by clearing the
+// override files, so it is not listed here.
 var usbPresets = []usbPreset{
 	{
 		Name:        "logitech-classic",
@@ -79,46 +101,23 @@ var usbPresets = []usbPreset{
 	},
 }
 
-// sipeedIdentity is the fallback for the factory preset on devices that were
-// never snapshotted (for example when the config directory was wiped).
-var sipeedIdentity = UsbIdentity{
-	VendorID:     "0x3346",
-	ProductID:    "0x1009",
-	Manufacturer: "sipeed",
-	Product:      "NanoKVM",
-	Serial:       "0123456789ABCDEF",
-}
-
 func (s *Service) GetUsbIdentity(c *gin.Context) {
 	var rsp proto.Response
 
 	usbIdentityMu.Lock()
 	defer usbIdentityMu.Unlock()
 
+	// The live gadget is the truth; the override files only say which parts of
+	// it were chosen rather than defaulted.
 	current, err := readGadgetIdentity()
 	if err != nil {
-		// Without a gadget there is nothing to report, but the stored choice is
-		// still worth returning so the UI does not lose the user's selection.
 		log.Errorf("failed to read usb gadget identity: %s", err)
 
-		stored, storedErr := loadStoredIdentity()
-		if storedErr != nil {
-			rsp.ErrRsp(c, -1, "failed to read usb identity")
-			return
-		}
-		current = stored
+		// Without a gadget, report what the next rebuild would produce.
+		current = pendingIdentity()
 	}
 
-	rsp.OkRspWithData(c, &proto.GetUsbIdentityRsp{
-		VendorID:     current.VendorID,
-		ProductID:    current.ProductID,
-		Manufacturer: current.Manufacturer,
-		Product:      current.Product,
-		Serial:       current.Serial,
-		Preset:       matchPreset(*current),
-		Presets:      listPresets(),
-	})
-
+	rsp.OkRspWithData(c, buildUsbIdentityRsp(current))
 	log.Debugf("get usb identity: %s:%s %q", current.VendorID, current.ProductID, current.Product)
 }
 
@@ -134,31 +133,43 @@ func (s *Service) SetUsbIdentity(c *gin.Context) {
 	usbIdentityMu.Lock()
 	defer usbIdentityMu.Unlock()
 
-	identity, err := resolveRequestedIdentity(&req)
-	if err != nil {
-		rsp.ErrRsp(c, -2, err.Error())
-		return
+	if req.Preset == PresetFactory {
+		if err := clearIdentityOverrides(); err != nil {
+			log.Errorf("failed to clear usb identity overrides: %s", err)
+			rsp.ErrRsp(c, -3, "failed to save usb identity")
+			return
+		}
+	} else {
+		identity, err := resolveRequestedIdentity(&req)
+		if err != nil {
+			rsp.ErrRsp(c, -2, err.Error())
+			return
+		}
+		if err := writeIdentityOverrides(identity); err != nil {
+			log.Errorf("failed to persist usb identity: %s", err)
+			rsp.ErrRsp(c, -3, "failed to save usb identity")
+			return
+		}
 	}
 
-	// Capture the untouched gadget once, so "factory" stays meaningful even
-	// after several overrides.
-	if err := snapshotFactoryIdentity(); err != nil {
-		log.Errorf("failed to snapshot factory usb identity: %s", err)
-	}
-
-	if err := saveStoredIdentity(identity); err != nil {
-		log.Errorf("failed to persist usb identity: %s", err)
-		rsp.ErrRsp(c, -3, "failed to save usb identity")
-		return
-	}
-
-	if err := applyIdentity(identity); err != nil {
-		log.Errorf("failed to apply usb identity: %s", err)
+	if err := restartGadget(); err != nil {
+		log.Errorf("failed to restart usb gadget: %s", err)
 		rsp.ErrRsp(c, -4, "failed to apply usb identity")
 		return
 	}
 
-	rsp.OkRspWithData(c, &proto.GetUsbIdentityRsp{
+	current, err := readGadgetIdentity()
+	if err != nil {
+		log.Errorf("failed to read usb gadget identity after restart: %s", err)
+		current = pendingIdentity()
+	}
+
+	rsp.OkRspWithData(c, buildUsbIdentityRsp(current))
+	log.Debugf("set usb identity: %s:%s %q", current.VendorID, current.ProductID, current.Product)
+}
+
+func buildUsbIdentityRsp(identity *UsbIdentity) *proto.GetUsbIdentityRsp {
+	return &proto.GetUsbIdentityRsp{
 		VendorID:     identity.VendorID,
 		ProductID:    identity.ProductID,
 		Manufacturer: identity.Manufacturer,
@@ -166,49 +177,7 @@ func (s *Service) SetUsbIdentity(c *gin.Context) {
 		Serial:       identity.Serial,
 		Preset:       matchPreset(*identity),
 		Presets:      listPresets(),
-	})
-
-	log.Debugf("set usb identity: %s:%s %q", identity.VendorID, identity.ProductID, identity.Product)
-}
-
-// RestoreUsbIdentity re-applies the stored identity at startup, because the boot
-// scripts recreate the gadget with the stock descriptor. It is a no-op when no
-// override was ever configured or when the gadget already matches.
-func RestoreUsbIdentity() {
-	usbIdentityMu.Lock()
-	defer usbIdentityMu.Unlock()
-
-	stored, err := loadStoredIdentity()
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Errorf("failed to load stored usb identity: %s", err)
-		}
-		return
 	}
-
-	current, err := readGadgetIdentity()
-	if err != nil {
-		log.Debugf("usb gadget not available, skip identity restore: %s", err)
-		return
-	}
-
-	if *current == *stored {
-		log.Debugf("usb identity already applied, skip restore")
-		return
-	}
-
-	// The snapshot has to happen before the first write, otherwise the factory
-	// descriptor is lost.
-	if err := snapshotFactoryIdentity(); err != nil {
-		log.Errorf("failed to snapshot factory usb identity: %s", err)
-	}
-
-	if err := applyIdentity(stored); err != nil {
-		log.Errorf("failed to restore usb identity: %s", err)
-		return
-	}
-
-	log.Infof("restored usb identity: %s:%s %q", stored.VendorID, stored.ProductID, stored.Product)
 }
 
 func resolveRequestedIdentity(req *proto.SetUsbIdentityReq) (*UsbIdentity, error) {
@@ -232,10 +201,6 @@ func resolveRequestedIdentity(req *proto.SetUsbIdentityReq) (*UsbIdentity, error
 }
 
 func lookupPreset(name string) (*UsbIdentity, error) {
-	if name == PresetFactory {
-		return factoryIdentity(), nil
-	}
-
 	for _, preset := range usbPresets {
 		if preset.Name == name {
 			identity := preset.Identity
@@ -250,7 +215,7 @@ func listPresets() []proto.UsbIdentityPreset {
 	presets := []proto.UsbIdentityPreset{
 		{
 			Name:        PresetFactory,
-			Description: "Restore the original NanoKVM descriptor",
+			Description: "Restore the original NanoKVM Pro descriptor",
 		},
 	}
 
@@ -265,7 +230,7 @@ func listPresets() []proto.UsbIdentityPreset {
 }
 
 func matchPreset(identity UsbIdentity) string {
-	if identity == *factoryIdentity() {
+	if identity == factoryIdentity {
 		return PresetFactory
 	}
 
@@ -276,15 +241,6 @@ func matchPreset(identity UsbIdentity) string {
 	}
 
 	return PresetCustom
-}
-
-func factoryIdentity() *UsbIdentity {
-	identity, err := readIdentityFile(usbFactoryFile)
-	if err != nil {
-		fallback := sipeedIdentity
-		return &fallback
-	}
-	return identity
 }
 
 func validateIdentity(identity *UsbIdentity) error {
@@ -340,12 +296,74 @@ func validateUSBString(value string) error {
 	}
 
 	for _, r := range value {
-		// configfs stores one line per attribute, so control characters would
-		// either truncate the value or be rejected by the kernel.
+		// usbdev.sh cats each file straight into a configfs attribute, which
+		// holds a single line, so a newline would truncate the value.
 		if r == '\n' || r == '\r' || unicode.IsControl(r) {
 			return errors.New("contains control characters")
 		}
 	}
+
+	return nil
+}
+
+// pendingIdentity reports the descriptor the next gadget rebuild would produce:
+// the override files where present, the usbdev.sh defaults everywhere else.
+func pendingIdentity() *UsbIdentity {
+	identity := factoryIdentity
+
+	for _, field := range usbIdentityFiles {
+		data, err := os.ReadFile(filepath.Join(bootConfDir, field.file))
+		if err != nil {
+			continue
+		}
+		field.set(&identity, strings.TrimSpace(string(data)))
+	}
+
+	return &identity
+}
+
+func writeIdentityOverrides(identity *UsbIdentity) error {
+	for _, field := range usbIdentityFiles {
+		path := filepath.Join(bootConfDir, field.file)
+		// The trailing newline is what makes an empty value work: usbdev.sh
+		// cats the file into configfs, and a zero-byte write is rejected.
+		if err := os.WriteFile(path, []byte(field.get(identity)+"\n"), 0o644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
+func clearIdentityOverrides() error {
+	for _, field := range usbIdentityFiles {
+		path := filepath.Join(bootConfDir, field.file)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("failed to remove %s: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
+// restartGadget tears the gadget down and builds it again, which is when
+// usbdev.sh re-reads the override files. The host sees this as a re-plug of the
+// composite device, so the HID nodes are closed for the duration.
+func restartGadget() error {
+	h := hid.GetHid()
+	h.Lock()
+	h.CloseNoLock()
+	defer func() {
+		h.OpenNoLock()
+		h.Unlock()
+	}()
+
+	if err := exec.Command("bash", usbScript, "restart").Run(); err != nil {
+		return fmt.Errorf("%s restart failed: %w", usbScript, err)
+	}
+
+	// The HID nodes reappear asynchronously after the gadget is rebuilt.
+	time.Sleep(3 * time.Second)
 
 	return nil
 }
@@ -388,144 +406,4 @@ func readGadgetAttr(name string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
-}
-
-func writeGadgetAttr(name string, value string) error {
-	// configfs strips the trailing newline, which is also how an empty string
-	// descriptor is written.
-	return os.WriteFile(filepath.Join(gadgetDir, name), []byte(value+"\n"), 0o644)
-}
-
-// applyIdentity rewrites the gadget descriptor. The gadget has to be detached
-// from the UDC first: while it is bound, configfs rejects writes to these
-// attributes. The host sees the result as a re-plug of the composite device.
-func applyIdentity(identity *UsbIdentity) error {
-	udc, err := currentUDC()
-	if err != nil {
-		return err
-	}
-
-	h := hid.GetHid()
-	h.Lock()
-	h.CloseNoLock()
-	defer func() {
-		h.OpenNoLock()
-		h.Unlock()
-	}()
-
-	if err := os.WriteFile(gadgetUDC, []byte("\n"), 0o644); err != nil {
-		return fmt.Errorf("failed to unbind gadget: %w", err)
-	}
-
-	// Give the host a moment to notice the disconnect before it is offered a
-	// device with a different identity on the same port.
-	time.Sleep(500 * time.Millisecond)
-
-	attrs := []struct {
-		name  string
-		value string
-	}{
-		{"idVendor", identity.VendorID},
-		{"idProduct", identity.ProductID},
-		{"strings/0x409/manufacturer", identity.Manufacturer},
-		{"strings/0x409/product", identity.Product},
-		{"strings/0x409/serialnumber", identity.Serial},
-	}
-
-	var writeErr error
-	for _, attr := range attrs {
-		if err := writeGadgetAttr(attr.name, attr.value); err != nil {
-			writeErr = fmt.Errorf("failed to write %s: %w", attr.name, err)
-			break
-		}
-	}
-
-	// Rebind even when a write failed, otherwise the host is left without any
-	// keyboard or mouse at all.
-	if err := os.WriteFile(gadgetUDC, []byte(udc+"\n"), 0o644); err != nil {
-		if writeErr != nil {
-			return writeErr
-		}
-		return fmt.Errorf("failed to rebind gadget: %w", err)
-	}
-
-	if writeErr != nil {
-		return writeErr
-	}
-
-	// The HID nodes reappear asynchronously after the rebind.
-	time.Sleep(2 * time.Second)
-
-	return nil
-}
-
-func currentUDC() (string, error) {
-	entries, err := os.ReadDir(udcClassDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to list %s: %w", udcClassDir, err)
-	}
-
-	for _, entry := range entries {
-		return entry.Name(), nil
-	}
-
-	return "", errors.New("no usb device controller found")
-}
-
-func snapshotFactoryIdentity() error {
-	if _, err := os.Stat(usbFactoryFile); err == nil {
-		return nil
-	}
-
-	// A stored override means the gadget was already rewritten at least once,
-	// so the running descriptor is not the factory one any more.
-	if _, err := os.Stat(usbIdentityFile); err == nil {
-		return nil
-	}
-
-	identity, err := readGadgetIdentity()
-	if err != nil {
-		return err
-	}
-
-	return writeIdentityFile(usbFactoryFile, identity)
-}
-
-func loadStoredIdentity() (*UsbIdentity, error) {
-	return readIdentityFile(usbIdentityFile)
-}
-
-func saveStoredIdentity(identity *UsbIdentity) error {
-	return writeIdentityFile(usbIdentityFile, identity)
-}
-
-func readIdentityFile(path string) (*UsbIdentity, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var identity UsbIdentity
-	if err := json.Unmarshal(data, &identity); err != nil {
-		return nil, fmt.Errorf("failed to decode %s: %w", path, err)
-	}
-
-	if err := validateIdentity(&identity); err != nil {
-		return nil, fmt.Errorf("invalid identity in %s: %w", path, err)
-	}
-
-	return &identity, nil
-}
-
-func writeIdentityFile(path string, identity *UsbIdentity) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(identity, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
