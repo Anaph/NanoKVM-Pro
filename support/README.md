@@ -35,6 +35,11 @@ Two independent descriptors decide what the controlled machine sees:
   are what the boot script reads, the override survives reboots on its own; the
   `factory` preset simply deletes them.
 
+  Built-in presets (selectable in that panel, or as the image default):
+  `logitech-classic` (046d:c517), `logitech-mk540` (046d:c52b, Unifying
+  receiver) and `logitech-mk270` (046d:c534, nano receiver) — all real Logitech
+  receiver ids. The image ships `logitech-classic` as the default.
+
 - **The EDID in the LT6911 capture chip** names the "monitor". See
   [`edid/README.md`](edid/README.md).
 
@@ -103,11 +108,6 @@ A full flashable `.axp` additionally needs a base image built from
 [maix_ax620e_sdk](https://github.com/sipeed/maix_ax620e_sdk); see
 [`scripts/build_image/README.md`](scripts/build_image/README.md).
 
-The `image` CI job also converts the `.axp` into a raw `.img.xz` with `axp2img`
-(`pip install axp-tools`), and publishes both. The `.img.xz` is what balenaEtcher
-flashes directly (or `xz -dc <file>.img.xz | sudo dd of=/dev/<device> bs=4M`);
-the `.axp` is the same image in Sipeed's container for their own flashing tool.
-
 ## Firmware images
 
 The `image` job in `.github/workflows/build.yml` produces a flashable `.axp`.
@@ -136,5 +136,8 @@ python3 support/scripts/build_image/build_image.py base.axp \
 ```
 
 It needs root, loop devices and roughly 10 GB of free space on top of the base
-image. `axp2img -i firmware.axp` (`pip install axp-tools`) converts the result
-to `.img` if your flashing tool wants that.
+image. Flash the resulting `.axp` with Sipeed's tool (see
+[`scripts/build_image/README.md`](scripts/build_image/README.md)). Do not convert
+it to a raw `.img` for balenaEtcher/dd: on this board's soldered eMMC that path
+laid the partitions at the wrong offsets and bricked a device, recoverable only
+by reflashing the `.axp` over USB.

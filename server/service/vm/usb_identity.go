@@ -99,6 +99,32 @@ var usbPresets = []usbPreset{
 			Serial: "",
 		},
 	},
+	{
+		// The Unifying receiver bundled with the MK540 Advanced (and MK545,
+		// MK710, ...). 046d:c52b is the real Unifying Receiver id.
+		Name:        "logitech-mk540",
+		Description: "Logitech MK540 Advanced (Unifying receiver 046d:c52b)",
+		Identity: UsbIdentity{
+			VendorID:     "0x046d",
+			ProductID:    "0xc52b",
+			Manufacturer: "Logitech",
+			Product:      "USB Receiver",
+			Serial:       "",
+		},
+	},
+	{
+		// The nano receiver bundled with the MK270 (and MK235/MK220).
+		// 046d:c534 is the real "USB Receiver" nano id.
+		Name:        "logitech-mk270",
+		Description: "Logitech MK270 (nano receiver 046d:c534)",
+		Identity: UsbIdentity{
+			VendorID:     "0x046d",
+			ProductID:    "0xc534",
+			Manufacturer: "Logitech",
+			Product:      "USB Receiver",
+			Serial:       "",
+		},
+	},
 }
 
 func (s *Service) GetUsbIdentity(c *gin.Context) {

@@ -323,8 +323,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            android-sdk-libsparse-utils qemu-user-static binfmt-support rsync mtools xz-utils
-          python3 -m pip install --quiet tqdm axp-tools
+            android-sdk-libsparse-utils qemu-user-static binfmt-support rsync mtools
+          python3 -m pip install --quiet tqdm
 
       # build_image.py chroots into the arm64 rootfs. Without a registered
       # handler the kernel cannot exec its binaries and chroot fails with
@@ -437,32 +437,10 @@ jobs:
           echo "rootfs: default-edid one-shot installed and enabled"
           sudo umount verify/mp
 
-      # balenaEtcher (and dd) want a raw disk image, not the .axp container.
-      # axp2img lays the partitions out per the image's XML and xz-compresses the
-      # result, which balenaEtcher reads directly.
-      - name: Convert to a flashable .img.xz
-        id: img
-        env:
-          IMAGE_NAME: ${{ steps.image.outputs.name }}
-        run: |
-          set -euo pipefail
-          # Free the inputs first: axp2img re-unpacks the .axp and expands the
-          # rootfs, so the peak footprint is several GB on top of the image.
-          rm -rf image/base.axp image-app verify
-
-          img_xz="${IMAGE_NAME%.axp}.img.xz"
-          echo "name=${img_xz}" >> "$GITHUB_OUTPUT"
-
-          axp2img -i "image/${IMAGE_NAME}" -o "image/${img_xz}"
-          ls -la "image/${img_xz}"
-          df -h /
-
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-image
-          path: |
-            image/*.axp
-            image/*.img.xz
+          path: image/*.axp
           if-no-files-found: error
           compression-level: 0
 
@@ -472,7 +450,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release.outputs.version }}
           IMAGE_NAME: ${{ steps.image.outputs.name }}
-          IMG_XZ: ${{ steps.img.outputs.name }}
         run: |
           set -euo pipefail
 
@@ -489,11 +466,9 @@ jobs:
             echo
             echo "### Flashing"
             echo
-            echo "\`${IMG_XZ}\` is a raw disk image: flash it straight to the eMMC with"
-            echo "balenaEtcher (it reads .xz directly) or \`xz -dc ${IMG_XZ} | sudo dd of=/dev/<device> bs=4M\`."
-            echo "See the [Sipeed wiki](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM_Pro/faq.html#Image-Burning-Methods) for how to enter flashing mode."
-            echo
-            echo "\`${IMAGE_NAME}\` is the same image in Sipeed's .axp container, for their own flashing tool."
+            echo "\`${IMAGE_NAME}\` is a complete image. Flash it with Sipeed's tool as described in the"
+            echo "[Sipeed wiki](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM_Pro/faq.html#Image-Burning-Methods)."
+            echo "Do not write it with balenaEtcher/dd — the .axp is a container, not a raw disk image."
             echo
             echo "### Updating an existing device"
             echo
@@ -512,7 +487,6 @@ jobs:
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
 
           gh release create "$tag" \
-            "image/${IMG_XZ}" \
             "image/${IMAGE_NAME}" \
             "dist/release/nanokvm_pro_${VERSION}.tar.gz" \
             --title "$VERSION" \

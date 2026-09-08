@@ -384,6 +384,8 @@ const en = {
           presets: {
             factory: 'NanoKVM (factory)',
             'logitech-classic': 'Logitech Cordless Desktop receiver',
+            'logitech-mk540': 'Logitech MK540 (Unifying receiver)',
+            'logitech-mk270': 'Logitech MK270 (nano receiver)',
             custom: 'Custom'
           }
         },

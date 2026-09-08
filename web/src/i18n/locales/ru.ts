@@ -321,6 +321,8 @@ const ru = {
           presets: {
             factory: 'NanoKVM (заводская)',
             'logitech-classic': 'Приёмник Logitech Cordless Desktop',
+            'logitech-mk540': 'Logitech MK540 (приёмник Unifying)',
+            'logitech-mk270': 'Logitech MK270 (нано-приёмник)',
             custom: 'Вручную'
           }
         },
