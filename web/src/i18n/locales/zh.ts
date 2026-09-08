@@ -362,6 +362,8 @@ const zh = {
           presets: {
             factory: 'NanoKVM（出厂）',
             'logitech-classic': '罗技 Cordless Desktop 接收器',
+            'logitech-mk540': '罗技 MK540（Unifying 接收器）',
+            'logitech-mk270': '罗技 MK270（Nano 接收器）',
             custom: '自定义'
           }
         },

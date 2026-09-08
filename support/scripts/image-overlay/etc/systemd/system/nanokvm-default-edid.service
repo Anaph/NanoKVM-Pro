@@ -7,6 +7,9 @@ After=nanokvm.service
 Type=oneshot
 ExecStart=/usr/local/sbin/nanokvm-default-edid.sh
 RemainAfterExit=yes
+# The script waits for the EDID node with a bounded retry loop; cap it so a
+# device that never brings the node up cannot stall the boot target forever.
+TimeoutStartSec=150
 
 [Install]
 WantedBy=multi-user.target
